@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Grades - UCC</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h2>UCC</h2>
+          <p>Academic Portal</p>
+        </div>
+
+        <nav class="nav-links">
+          <a class="nav-item" href="index.html">My Dashboard</a>
+          <a class="nav-item" href="my-attendance.html">My Attendance</a>
+          <a class="nav-item active" href="my-grades.html">My Grades</a>
+        </nav>
+      </aside>
+
+      <main class="dashboard-main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Student Personal Portal</p>
+            <h1>My Grades</h1>
+            <p id="page-subtitle" class="topbar-subtitle">Read-only record of your grades.</p>
+          </div>
+          <div class="topbar-actions">
+            <span class="badge">Student • Read Only</span>
+            <button id="change-password-btn" type="button" class="btn btn-primary">Change Password</button>
+            <button id="logout-btn" type="button" class="btn btn-secondary">Logout</button>
+          </div>
+        </header>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <p class="stat-label">Current Grade</p>
+            <h3 id="stat-current">—</h3>
+            <span id="stat-current-note" class="stat-trend positive">Loading...</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Subjects Graded</p>
+            <h3 id="stat-graded">—</h3>
+            <span class="stat-trend positive">With an average</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Pending Grades</p>
+            <h3 id="stat-pending">—</h3>
+            <span id="stat-pending-note" class="stat-trend">Loading...</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Access Level</p>
+            <h3>Read Only</h3>
+            <span class="stat-trend">Student account</span>
+          </article>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3>Grade Records</h3>
+            <span class="badge">Latest</span>
+          </div>
+          <table class="readonly-table">
+            <thead>
+              <tr>
+                <th>Subject</th>
+                <th>Term</th>
+                <th>Prelim</th>
+                <th>Midterm</th>
+                <th>Final</th>
+                <th>Average</th>
+              </tr>
+            </thead>
+            <tbody id="grades-body"><tr><td colspan="6">Loading records...</td></tr></tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <script src="student-portal.js"></script>
+    <script>
+      (async function () {
+        const { escapeHtml } = StudentPortal;
+        const session = await StudentPortal.requireStudent();
+        if (!session) return;
+        StudentPortal.bindTopbarButtons();
+
+        const body = document.getElementById('grades-body');
+        const FIELDS = ['prelim', 'midterm', 'final'];
+
+        function setText(id, text) { document.getElementById(id).textContent = text; }
+
+        const hasValue = (value) => value !== null && value !== undefined && value !== '' && !Number.isNaN(Number(value));
+        const show = (value) => (hasValue(value) ? escapeHtml(value) : '—');
+
+        // Average of whichever of prelim / midterm / final are recorded.
+        // Falls back to the server's average if none of the three are present.
+        function averageOf(record) {
+          const entered = FIELDS.map((field) => record[field]).filter(hasValue).map(Number);
+          if (entered.length) return Math.round((entered.reduce((sum, value) => sum + value, 0) / entered.length) * 100) / 100;
+          return hasValue(record.average) ? Number(record.average) : null;
+        }
+
+        function render(grades) {
+          body.innerHTML = grades.length
+            ? grades.map((record) => {
+                const average = averageOf(record);
+                return `
+                  <tr>
+                    <td>${escapeHtml(record.subject)}</td>
+                    <td>${escapeHtml(record.term || '')}</td>
+                    <td>${show(record.prelim)}</td>
+                    <td>${show(record.midterm)}</td>
+                    <td>${show(record.final)}</td>
+                    <td><strong>${average === null ? 'Pending' : average}</strong></td>
+                  </tr>`;
+              }).join('')
+            : '<tr><td colspan="6">No grades have been recorded.</td></tr>';
+
+          const averages = grades.map(averageOf).filter((value) => value !== null);
+          const pending = grades.length - averages.length;
+          if (averages.length) {
+            const mean = averages.reduce((sum, value) => sum + value, 0) / averages.length;
+            setText('stat-current', (Math.round(mean * 100) / 100).toString());
+            setText('stat-current-note', `Across ${averages.length} subject${averages.length === 1 ? '' : 's'}`);
+          } else {
+            setText('stat-current', '—');
+            setText('stat-current-note', 'No grades recorded yet');
+          }
+          setText('stat-graded', String(averages.length));
+          setText('stat-pending', String(pending));
+          setText('stat-pending-note', pending ? 'Waiting for your instructor' : 'All grades posted');
+        }
+
+        async function load() {
+          try {
+            const data = await StudentPortal.loadMyRecords();
+            if (data.student?.name) {
+              document.getElementById('page-subtitle').textContent = `Read-only record of grades for ${data.student.name}.`;
+            }
+            render(data.grades || []);
+          } catch (error) {
+            console.error('Grades load error:', error);
+            body.innerHTML = '<tr><td colspan="6">Unable to load grades.</td></tr>';
+          }
+        }
+
+        load();
+        setInterval(load, 10000);
+      })();
+    </script>
+    <script src="session-timeout.js"></script>
+  </body>
+</html>

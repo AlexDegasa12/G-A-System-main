@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Attendance - UCC</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h2>UCC</h2>
+          <p>Academic Portal</p>
+        </div>
+
+        <nav class="nav-links">
+          <a class="nav-item" href="index.html">My Dashboard</a>
+          <a class="nav-item active" href="my-attendance.html">My Attendance</a>
+          <a class="nav-item" href="my-grades.html">My Grades</a>
+        </nav>
+      </aside>
+
+      <main class="dashboard-main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Student Personal Portal</p>
+            <h1>My Attendance</h1>
+            <p id="page-subtitle" class="topbar-subtitle">Read-only record of your attendance.</p>
+          </div>
+          <div class="topbar-actions">
+            <span class="badge">Student • Read Only</span>
+            <button id="change-password-btn" type="button" class="btn btn-primary">Change Password</button>
+            <button id="logout-btn" type="button" class="btn btn-secondary">Logout</button>
+          </div>
+        </header>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <p class="stat-label">Attendance Rate</p>
+            <h3 id="stat-rate">—</h3>
+            <span id="stat-rate-note" class="stat-trend positive">Loading...</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Present</p>
+            <h3 id="stat-present">—</h3>
+            <span class="stat-trend positive">Sessions</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Late</p>
+            <h3 id="stat-late">—</h3>
+            <span class="stat-trend">Sessions</span>
+          </article>
+          <article class="stat-card">
+            <p class="stat-label">Absent</p>
+            <h3 id="stat-absent">—</h3>
+            <span class="stat-trend">Sessions</span>
+          </article>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3>Attendance Records</h3>
+            <span class="badge">Current Term</span>
+          </div>
+          <div class="topbar-actions">
+            <label>Subject
+              <select id="subject-filter"><option value="">All subjects</option></select>
+            </label>
+          </div>
+          <table class="readonly-table">
+            <thead>
+              <tr>
+                <th>Subject</th>
+                <th>Date</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="attendance-body"><tr><td colspan="3">Loading records...</td></tr></tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <script src="student-portal.js"></script>
+    <script>
+      (async function () {
+        const { escapeHtml, formatDate } = StudentPortal;
+        const session = await StudentPortal.requireStudent();
+        if (!session) return;
+        StudentPortal.bindTopbarButtons();
+
+        const body = document.getElementById('attendance-body');
+        const subjectFilter = document.getElementById('subject-filter');
+        let records = [];
+
+        function setText(id, text) { document.getElementById(id).textContent = text; }
+
+        function render() {
+          const selected = subjectFilter.value;
+          const visible = records
+            .filter((record) => !selected || record.subject === selected)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+          const count = (status) => visible.filter((record) => record.status === status).length;
+          const present = count('Present');
+          const late = count('Late');
+          const absent = count('Absent');
+          const attended = present + late;
+
+          setText('stat-present', String(present));
+          setText('stat-late', String(late));
+          setText('stat-absent', String(absent));
+          if (visible.length) {
+            setText('stat-rate', `${Math.round((attended / visible.length) * 100)}%`);
+            setText('stat-rate-note', `${attended} of ${visible.length} sessions attended`);
+          } else {
+            setText('stat-rate', '—');
+            setText('stat-rate-note', 'No attendance recorded yet');
+          }
+
+          body.innerHTML = visible.length
+            ? visible.map((record) => `
+                <tr>
+                  <td>${escapeHtml(record.subject)}</td>
+                  <td>${escapeHtml(formatDate(record.date))}</td>
+                  <td><span class="status-pill ${record.status === 'Absent' ? 'warning' : 'success'}">${escapeHtml(record.status)}</span></td>
+                </tr>`).join('')
+            : '<tr><td colspan="3">No attendance has been recorded.</td></tr>';
+        }
+
+        function refreshSubjects() {
+          const current = subjectFilter.value;
+          const subjects = [...new Set(records.map((record) => record.subject).filter(Boolean))].sort();
+          subjectFilter.innerHTML = '<option value="">All subjects</option>' +
+            subjects.map((subject) => `<option value="${escapeHtml(subject)}">${escapeHtml(subject)}</option>`).join('');
+          subjectFilter.value = subjects.includes(current) ? current : '';
+        }
+
+        async function load() {
+          try {
+            const data = await StudentPortal.loadMyRecords();
+            records = data.attendance || [];
+            if (data.student?.name) {
+              document.getElementById('page-subtitle').textContent = `Read-only record of attendance for ${data.student.name}.`;
+            }
+            refreshSubjects();
+            render();
+          } catch (error) {
+            console.error('Attendance load error:', error);
+            body.innerHTML = '<tr><td colspan="3">Unable to load attendance.</td></tr>';
+          }
+        }
+
+        subjectFilter.addEventListener('change', render);
+        load();
+        setInterval(load, 10000);
+      })();
+    </script>
+    <script src="session-timeout.js"></script>
+  </body>
+</html>

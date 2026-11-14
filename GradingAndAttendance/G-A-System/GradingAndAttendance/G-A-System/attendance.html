@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <script src="page-auth.js"></script>
+    <title>Attendance - UCC</title>
+    <style>
+        .sheet-meta { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 14px; align-items: flex-end; }
+        .sheet-meta label { display: flex; flex-direction: column; gap: 4px; color: var(--green-700); font-weight: 700; font-size: 0.85rem; }
+        .sheet-meta input { min-height: 38px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--ink); font: inherit; min-width: 150px; }
+        .sheet-wrap { overflow-x: auto; }
+        .sheet-table { border-collapse: collapse; width: 100%; min-width: 600px; }
+        .sheet-table th, .sheet-table td { border: 1px solid var(--border); padding: 8px 10px; text-align: center; white-space: nowrap; }
+        .sheet-table th.left, .sheet-table td.left { text-align: left; }
+        .att-cell { width: 100%; min-width: 90px; border: 0; background: transparent; font-weight: 600; font-size: 0.8rem; cursor: pointer; padding: 6px 4px; border-radius: 4px; }
+        .att-cell:disabled { cursor: default; }
+        .att-present { color: #1b6b3a; background: #e3f4ea; }
+        .att-absent { color: #a02828; background: #fbe6e6; }
+        .att-late { color: #9a6b00; background: #fff3d6; }
+        .att-empty { color: #999; }
+        .remove-date { border: 0; background: transparent; color: #fff; cursor: pointer; margin-left: 6px; font-size: 1rem; }
+        .sheet-message { margin: 10px 0 0; font-size: 0.9rem; color: #666; }
+        .sheet-message.error { color: #a02828; }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <h2>UCC</h2>
+                <p>Academic Portal</p>
+            </div>
+
+            <nav class="nav-links">
+                <a class="nav-item" href="index.html">Dashboard</a>
+                <a class="nav-item active" href="attendance.html">Attendance</a>
+                <a class="nav-item" href="grades.html">Grades</a>
+                <a class="nav-item nav-admin" href="students.html">Students</a>
+                <a class="nav-item nav-admin" href="faculty.html">Faculty</a>
+                <a class="nav-item nav-admin" href="reports.html">Reports</a>
+            </nav>
+        </aside>
+
+        <main class="dashboard-main">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">University Academic Administration</p>
+                    <h1>Attendance Management</h1>
+                    <p class="topbar-subtitle">Monitor and manage student attendance records.</p>
+                </div>
+                <div class="topbar-actions">
+                    <span class="badge">Term 1 • 2026</span>
+                    <button id="export-attendance" type="button" class="btn btn-primary">Export Attendance Report</button>
+                </div>
+            </header>
+
+            <section class="card">
+                <div class="card-header">
+                    <h3>Attendance Sheet</h3>
+                    <span class="badge">Current List</span>
+                </div>
+
+                <div class="sheet-meta">
+                    <label>Subject <input id="attendance-subject" type="text" placeholder="e.g. CS 101"></label>
+                    <label>Sem <input id="attendance-sem" type="text" placeholder="e.g. 1st"></label>
+                    <label>SY <input id="attendance-sy" type="text" placeholder="e.g. 2026-2027"></label>
+                    <button id="attendance-filter" class="btn btn-secondary" type="button">Load Sheet</button>
+                </div>
+
+                <div class="sheet-meta">
+                    <label>Class date <input id="attendance-date" type="date"></label>
+                    <button id="add-date" class="btn btn-secondary" type="button">Add Date Column</button>
+                </div>
+
+                <div class="sheet-wrap">
+                    <table class="sheet-table">
+                        <thead id="sheet-head"></thead>
+                        <tbody id="sheet-body">
+                            <tr><td colspan="3">Loading student records...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p id="sheet-message" class="sheet-message">Click a cell to cycle Present → Absent → Late. Changes save automatically.</p>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const sheetHead = document.getElementById('sheet-head');
+        const sheetBody = document.getElementById('sheet-body');
+        const sheetMessage = document.getElementById('sheet-message');
+        const attendanceSubject = document.getElementById('attendance-subject');
+        const attendanceSem = document.getElementById('attendance-sem');
+        const attendanceSy = document.getElementById('attendance-sy');
+        const attendanceDate = document.getElementById('attendance-date');
+
+        const STATUS_CYCLE = ['Present', 'Absent', 'Late'];
+
+        let canManageAttendance = false;
+        let students = [];
+        let dates = [];          // 'YYYY-MM-DD', sorted
+        let statusMap = {};      // `${studentId}|${date}` -> status
+
+        attendanceDate.value = new Date().toISOString().slice(0, 10);
+
+        function getAuthHeaders() {
+            const token = sessionStorage.getItem('uccAccessToken');
+            return token ? { Authorization: `Bearer ${token}` } : {};
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[c]);
+        }
+
+        function setMessage(text, isError = false) {
+            sheetMessage.textContent = text;
+            sheetMessage.classList.toggle('error', isError);
+        }
+
+        function formatDate(iso) {
+            const [y, m, d] = iso.split('-');
+            return `${m}/${d}/${y}`;
+        }
+
+        async function api(url, options = {}) {
+            const response = await fetch(url, { ...options, headers: { ...getAuthHeaders(), ...(options.headers || {}) } });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                throw new Error(result.message || `Request failed (${response.status}) for ${url.split('?')[0]}`);
+            }
+            return result;
+        }
+
+        async function loadStudents() {
+            const result = await api('/api/students');
+            students = (result.data || []).filter((student) => student.studentId && student.name);
+        }
+
+        async function loadDate(date) {
+            const subject = attendanceSubject.value.trim();
+            if (!subject) return;
+            const result = await api(`/api/attendance?date=${encodeURIComponent(date)}&subject=${encodeURIComponent(subject)}`);
+            (result.data || []).forEach((record) => {
+                statusMap[`${record.studentId}|${date}`] = record.status;
+            });
+        }
+
+        // Try to discover dates that already have records for this subject.
+        async function discoverDates() {
+            const subject = attendanceSubject.value.trim();
+            if (!subject) return;
+            try {
+                const result = await api(`/api/attendance?subject=${encodeURIComponent(subject)}`);
+                (result.data || []).forEach((record) => {
+                    if (!record.date) return;
+                    const iso = String(record.date).slice(0, 10);
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(iso) && !dates.includes(iso)) dates.push(iso);
+                });
+                dates.sort();
+            } catch (error) {
+                // Not critical: dates can still be added manually.
+            }
+        }
+
+        function totalFor(student) {
+            // TOTAL = days attended (Present + Late). Change to === 'Present' to count Present only.
+            return dates.filter((date) => ['Present', 'Late'].includes(statusMap[`${student.studentId}|${date}`])).length;
+        }
+
+        function statusClass(status) {
+            if (status === 'Present') return 'att-present';
+            if (status === 'Absent') return 'att-absent';
+            if (status === 'Late') return 'att-late';
+            return 'att-empty';
+        }
+
+        function renderSheet() {
+            sheetHead.innerHTML = `
+                <tr>
+                    <th class="left">STUD ID</th>
+                    <th class="left">LASTNAME, FIRSTNAME</th>
+                    ${dates.map((date) => `
+                        <th>${escapeHtml(formatDate(date))}${canManageAttendance ? `<button type="button" class="remove-date" data-date="${escapeHtml(date)}" title="Remove column">×</button>` : ''}</th>
+                    `).join('')}
+                    <th>TOTAL</th>
+                </tr>
+            `;
+
+            if (!students.length) {
+                sheetBody.innerHTML = `<tr><td colspan="${dates.length + 3}">No student records available yet.</td></tr>`;
+                return;
+            }
+
+            sheetBody.innerHTML = students.map((student) => `
+                <tr>
+                    <td class="left">${escapeHtml(student.studentId || 'Not set')}</td>
+                    <td class="left">${escapeHtml(student.name || 'Not set')}</td>
+                    ${dates.map((date) => {
+                        const status = statusMap[`${student.studentId}|${date}`];
+                        return `<td><button type="button" class="att-cell ${statusClass(status)}" data-student-id="${escapeHtml(student.studentId)}" data-date="${escapeHtml(date)}" ${canManageAttendance ? '' : 'disabled'}>${status ? escapeHtml(status.toUpperCase()) : '—'}</button></td>`;
+                    }).join('')}
+                    <td><strong>${totalFor(student)}</strong></td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadSheet() {
+            try {
+                try {
+                    const session = await api('/api/session');
+                    canManageAttendance = ['Program Head', 'Faculty'].includes(session.session?.role);
+                } catch (error) {
+                    canManageAttendance = false;
+                }
+
+                await loadStudents();
+                statusMap = {};
+                await discoverDates();
+                if (!dates.includes(attendanceDate.value) && !dates.length) dates.push(attendanceDate.value);
+                await Promise.all(dates.map(loadDate));
+                renderSheet();
+
+                if (!attendanceSubject.value.trim()) {
+                    setMessage('Enter a subject, then click Load Sheet to see or record attendance.');
+                } else {
+                    setMessage('Click a cell to cycle Present → Absent → Late. Changes save automatically.');
+                }
+            } catch (error) {
+                console.error('Attendance load error:', error);
+                sheetBody.innerHTML = '<tr><td colspan="3">Unable to load student records.</td></tr>';
+                setMessage(error.message, true);
+            }
+        }
+
+        async function saveStatus(studentId, date, status) {
+            const subject = attendanceSubject.value.trim();
+            await api('/api/attendance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ studentId, subject, date, status })
+            });
+        }
+
+        sheetBody.addEventListener('click', async (event) => {
+            const cell = event.target.closest('.att-cell');
+            if (!cell || !canManageAttendance) return;
+
+            const subject = attendanceSubject.value.trim();
+            if (!subject) return alert('Enter a subject before recording attendance.');
+
+            const { studentId, date } = cell.dataset;
+            const key = `${studentId}|${date}`;
+            const previous = statusMap[key];
+            const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(previous) + 1) % STATUS_CYCLE.length];
+
+            statusMap[key] = next;
+            renderSheet();
+            try {
+                await saveStatus(studentId, date, next);
+            } catch (error) {
+                if (previous === undefined) delete statusMap[key]; else statusMap[key] = previous;
+                renderSheet();
+                alert(error.message);
+            }
+        });
+
+        sheetHead.addEventListener('click', (event) => {
+            const button = event.target.closest('.remove-date');
+            if (!button) return;
+            dates = dates.filter((date) => date !== button.dataset.date);
+            renderSheet();
+        });
+
+        document.getElementById('add-date').addEventListener('click', async () => {
+            const date = attendanceDate.value;
+            if (!date) return alert('Pick a class date first.');
+            if (dates.includes(date)) return setMessage('That date is already on the sheet.');
+            dates.push(date);
+            dates.sort();
+            try {
+                await loadDate(date);
+            } catch (error) {
+                setMessage(error.message, true);
+            }
+            renderSheet();
+        });
+
+        document.getElementById('attendance-filter').addEventListener('click', () => {
+            dates = [];
+            loadSheet();
+        });
+
+        document.getElementById('export-attendance').addEventListener('click', () => {
+            const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+            const rows = [
+                ['Subject', attendanceSubject.value.trim(), 'Sem', attendanceSem.value.trim(), 'SY', attendanceSy.value.trim()],
+                [],
+                ['STUD ID', 'LASTNAME, FIRSTNAME', ...dates.map(formatDate), 'TOTAL'],
+                ...students.map((student) => [
+                    student.studentId,
+                    student.name,
+                    ...dates.map((date) => (statusMap[`${student.studentId}|${date}`] || '').toUpperCase()),
+                    totalFor(student)
+                ])
+            ];
+            const csv = rows.map((row) => row.map(quote).join(',')).join('\r\n');
+            const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'attendance-sheet.csv';
+            link.click();
+            URL.revokeObjectURL(url);
+        });
+
+        loadSheet();
+    </script>
+    <script src="session-timeout.js"></script>
+</body>
+</html>
