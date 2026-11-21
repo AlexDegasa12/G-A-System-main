@@ -9,6 +9,12 @@
     <style>
       .save-state { display: block; font-size: 0.75rem; color: #5b6c61; min-height: 1em; }
       .save-state.error { color: #a02828; }
+      .grade-eq { display: block; font-size: 0.75rem; color: #5b6c61; min-height: 1em; margin-top: 2px; }
+      .grade-input.invalid { border-color: #a02828; }
+      .transmuted-value { font-weight: 700; }
+      .status-pill.fail { background: #fbe3e3; color: #a02828; }
+      .status-pill.warn { background: #fff3d6; color: #8a6100; }
+      .status-pill.muted { background: #eceeed; color: #5b6c61; }
     </style>
   </head>
   <body>
@@ -35,7 +41,7 @@
           <div>
             <p class="eyebrow">University Academic Administration</p>
             <h1>Grade Management</h1>
-            <p class="topbar-subtitle">Track subject performance and final academic standing.</p>
+            <p class="topbar-subtitle">Enter grades from 0 to 100. The equivalent grade (1.00 to 5.00) is shown automatically.</p>
           </div>
           <div class="topbar-actions">
             <span class="badge">Term 1 • 2026</span>
@@ -46,23 +52,23 @@
         <section class="stats-grid">
           <article class="stat-card">
             <p class="stat-label">Average Grade</p>
-            <h3>—</h3>
-            <span class="stat-trend positive">Pending data</span>
+            <h3 id="stat-average">—</h3>
+            <span class="stat-trend positive" id="stat-average-note">Pending data</span>
           </article>
           <article class="stat-card">
             <p class="stat-label">Students Passing</p>
-            <h3>—</h3>
-            <span class="stat-trend positive">Pending data</span>
+            <h3 id="stat-passing">—</h3>
+            <span class="stat-trend positive" id="stat-passing-note">Pending data</span>
           </article>
           <article class="stat-card">
             <p class="stat-label">At Risk</p>
-            <h3>—</h3>
-            <span class="stat-trend">Pending review</span>
+            <h3 id="stat-risk">—</h3>
+            <span class="stat-trend" id="stat-risk-note">Pending review</span>
           </article>
           <article class="stat-card">
             <p class="stat-label">Submission Rate</p>
-            <h3>—</h3>
-            <span class="stat-trend positive">Pending data</span>
+            <h3 id="stat-submission">—</h3>
+            <span class="stat-trend positive" id="stat-submission-note">Pending data</span>
           </article>
         </section>
 
@@ -81,15 +87,16 @@
               <tr>
                 <th>Student</th>
                 <th>Course</th>
-                <th>Prelim</th>
-                <th>Midterm</th>
-                <th>Final</th>
-                <th>Average</th>
-                <th>Status</th>
+                <th>Prelim (0-100)</th>
+                <th>Midterm (0-100)</th>
+                <th>Final (0-100)</th>
+                <th>Average (0-100)</th>
+                <th>Transmuted</th>
+                <th>Remarks</th>
               </tr>
             </thead>
             <tbody id="grade-records-body">
-              <tr><td colspan="7">Loading student records...</td></tr>
+              <tr><td colspan="8">Loading student records...</td></tr>
             </tbody>
           </table>
         </section>
@@ -100,6 +107,22 @@
       let canManageGrades = false;
 
       const GRADE_FIELDS = ['prelim', 'midterm', 'final'];
+
+      // Transmutation table: percentage (0-100) -> equivalent grade.
+      // Highest row that the percentage reaches wins. Below the last row is a failing grade.
+      // NOTE: confirm these cut-offs with your instructor and edit them here if the school's table differs.
+      const TRANSMUTATION_TABLE = [
+        { min: 97, grade: '1.00' },
+        { min: 94, grade: '1.25' },
+        { min: 91, grade: '1.50' },
+        { min: 88, grade: '1.75' },
+        { min: 85, grade: '2.00' },
+        { min: 82, grade: '2.25' },
+        { min: 79, grade: '2.50' },
+        { min: 76, grade: '2.75' },
+        { min: 75, grade: '3.00' }
+      ];
+      const FAILING_GRADE = '5.00';
 
       function getAuthHeaders() {
         const token = sessionStorage.getItem('uccAccessToken');
@@ -115,19 +138,95 @@
       const gradeSubject = document.getElementById('grade-subject');
       const gradeTerm = document.getElementById('grade-term');
 
-      // Average of whichever of prelim / midterm / final have been entered.
+      // A valid grade is a number from 0 to 100. Anything else is ignored.
+      function parseGrade(value) {
+        if (value === '' || value === null || value === undefined) return null;
+        const number = Number(value);
+        if (Number.isNaN(number) || number < 0 || number > 100) return null;
+        return number;
+      }
+
+      // Average of whichever of prelim / midterm / final have been entered (0-100 scale).
       function computeAverage(values) {
-        const entered = values
-          .filter((value) => value !== '' && value !== null && value !== undefined)
-          .map(Number)
-          .filter((value) => !Number.isNaN(value));
+        const entered = values.map(parseGrade).filter((value) => value !== null);
         if (!entered.length) return null;
         const mean = entered.reduce((sum, value) => sum + value, 0) / entered.length;
         return Math.round(mean * 100) / 100;
       }
 
+      // Converts a 0-100 grade to the 1.00-5.00 equivalent. Returns null if there is no grade.
+      function transmute(percent) {
+        if (percent === null || percent === undefined) return null;
+        const row = TRANSMUTATION_TABLE.find((item) => percent >= item.min);
+        return row ? row.grade : FAILING_GRADE;
+      }
+
+      // Remarks need all three grades before saying Passed or Failed.
+      function getRemarks(values, transmuted) {
+        const enteredCount = values.map(parseGrade).filter((value) => value !== null).length;
+        if (!enteredCount) return { text: 'No grades', css: 'muted' };
+        if (enteredCount < GRADE_FIELDS.length) return { text: 'Incomplete', css: 'warn' };
+        return transmuted === FAILING_GRADE
+          ? { text: 'Failed', css: 'fail' }
+          : { text: 'Passed', css: 'success' };
+      }
+
       function gradeInput(field, value) {
-        return `<td><input class="grade-input" data-field="${field}" type="number" min="0" max="100" step="0.01" value="${escapeHtml(value ?? '')}" ${canManageGrades ? '' : 'disabled'}></td>`;
+        return `<td><input class="grade-input" data-field="${field}" type="number" min="0" max="100" step="0.01" value="${escapeHtml(value ?? '')}" ${canManageGrades ? '' : 'disabled'}><span class="grade-eq"></span></td>`;
+      }
+
+      // Recalculates everything shown in one row (equivalents, average, transmuted grade, remarks).
+      function refreshRow(row) {
+        const inputs = [...row.querySelectorAll('.grade-input')];
+        const values = inputs.map((item) => item.value);
+
+        inputs.forEach((item) => {
+          const percent = parseGrade(item.value);
+          const label = item.parentElement.querySelector('.grade-eq');
+          item.classList.toggle('invalid', item.value !== '' && percent === null);
+          label.textContent = percent === null ? '' : `= ${transmute(percent)}`;
+        });
+
+        const average = computeAverage(values);
+        const transmuted = transmute(average);
+        const remarks = getRemarks(values, transmuted);
+
+        row.querySelector('.average-value').textContent = average === null ? 'Not recorded' : average.toFixed(2);
+        row.querySelector('.transmuted-value').textContent = transmuted ?? '—';
+        const pill = row.querySelector('.status-pill');
+        pill.textContent = remarks.text;
+        pill.className = `status-pill ${remarks.css}`;
+
+        row.dataset.average = average === null ? '' : average;
+        row.dataset.complete = remarks.text === 'Passed' || remarks.text === 'Failed' ? '1' : '0';
+        row.dataset.remarks = remarks.text;
+      }
+
+      // Fills in the four summary cards from the rows on screen.
+      function updateSummary() {
+        const rows = [...gradeRecordsBody.querySelectorAll('tr[data-student-id]')];
+        const set = (id, text) => { document.getElementById(id).textContent = text; };
+        if (!rows.length) return;
+
+        const averages = rows.map((row) => row.dataset.average).filter((value) => value !== '').map(Number);
+        const passing = rows.filter((row) => row.dataset.remarks === 'Passed').length;
+        const failing = rows.filter((row) => row.dataset.remarks === 'Failed').length;
+        const complete = rows.filter((row) => row.dataset.complete === '1').length;
+
+        if (averages.length) {
+          const mean = Math.round((averages.reduce((sum, value) => sum + value, 0) / averages.length) * 100) / 100;
+          set('stat-average', mean.toFixed(2));
+          set('stat-average-note', `Transmuted ${transmute(mean)}`);
+        } else {
+          set('stat-average', '—');
+          set('stat-average-note', 'Pending data');
+        }
+        set('stat-passing', String(passing));
+        set('stat-passing-note', `of ${rows.length} students`);
+        set('stat-risk', String(failing));
+        set('stat-risk-note', failing ? 'Failing grade' : 'None at risk');
+        set('stat-submission', `${Math.round((complete / rows.length) * 100)}%`);
+        set('stat-submission-note', `${complete} of ${rows.length} complete`);
       }
 
       async function loadGradeRecords() {
@@ -147,27 +246,38 @@
 
           if (!studentsResponse.ok || !gradesResponse.ok || !result.success || !gradesResult.success) throw new Error('Unable to load students');
           if (!students.length) {
-            gradeRecordsBody.innerHTML = '<tr><td colspan="7">No student records available yet.</td></tr>';
+            gradeRecordsBody.innerHTML = '<tr><td colspan="8">No student records available yet.</td></tr>';
             return;
           }
 
           gradeRecordsBody.innerHTML = students.map((student) => {
             const record = records.find((item) => item.studentId === student.studentId) || {};
-            const average = computeAverage(GRADE_FIELDS.map((field) => record[field]));
             return `
             <tr data-student-id="${escapeHtml(student.studentId)}">
               <td>${escapeHtml(student.name)}</td>
               <td>${escapeHtml(student.course || 'Not set')}</td>
               ${GRADE_FIELDS.map((field) => gradeInput(field, record[field])).join('')}
-              <td><span class="average-value">${average ?? 'Not recorded'}</span><span class="save-state"></span></td>
-              <td><span class="status-pill success">${escapeHtml(student.status || 'Not set')}</span></td>
+              <td><span class="average-value">Not recorded</span><span class="save-state"></span></td>
+              <td><span class="transmuted-value">—</span></td>
+              <td><span class="status-pill muted">No grades</span></td>
             </tr>
           `;
           }).join('');
+
+          gradeRecordsBody.querySelectorAll('tr[data-student-id]').forEach(refreshRow);
+          updateSummary();
         } catch (error) {
-          gradeRecordsBody.innerHTML = '<tr><td colspan="7">Unable to load student records.</td></tr>';
+          gradeRecordsBody.innerHTML = '<tr><td colspan="8">Unable to load student records.</td></tr>';
         }
       }
+
+      // Live preview while typing: shows the equivalent grade before anything is saved.
+      gradeRecordsBody.addEventListener('input', (event) => {
+        const input = event.target.closest('.grade-input');
+        if (!input) return;
+        refreshRow(input.closest('tr'));
+        updateSummary();
+      });
 
       // Grades save automatically when a box is changed (on Enter or when you click away).
       gradeRecordsBody.addEventListener('change', async (event) => {
@@ -181,7 +291,7 @@
           state.classList.toggle('error', isError);
         };
 
-        if (!input.checkValidity()) {
+        if (input.value !== '' && parseGrade(input.value) === null) {
           input.reportValidity();
           return setState('Grade must be 0 to 100', true);
         }
@@ -192,14 +302,18 @@
           return alert('Enter a subject before saving grades.');
         }
 
-        // Update the average on screen right away.
+        refreshRow(row);
+        updateSummary();
+
+        // Only valid 0-100 grades are sent. Invalid boxes block saving.
         const inputs = [...row.querySelectorAll('.grade-input')];
-        const average = computeAverage(inputs.map((item) => item.value));
-        row.querySelector('.average-value').textContent = average ?? 'Not recorded';
+        if (inputs.some((item) => item.value !== '' && parseGrade(item.value) === null)) {
+          return setState('Fix grades outside 0 to 100', true);
+        }
 
         const updates = {};
         inputs.forEach((item) => {
-          if (item.value !== '') updates[item.dataset.field] = item.value;
+          if (item.value !== '') updates[item.dataset.field] = Number(item.value);
         });
         if (!Object.keys(updates).length) return setState('Empty grades are not saved', true);
 

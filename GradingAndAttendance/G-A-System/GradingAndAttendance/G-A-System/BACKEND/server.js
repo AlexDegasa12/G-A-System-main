@@ -7,6 +7,9 @@ const bcryptjs = require('bcryptjs');
 
 const port = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'development-secret-change-me';
+if (!process.env.JWT_SECRET) {
+  console.warn('WARNING: JWT_SECRET is not set. Using an insecure default. Set JWT_SECRET in your .env file.');
+}
 const allowUnlinkedStudentRegistrationForTesting =
   process.env.ALLOW_UNLINKED_STUDENT_REGISTRATION === 'true' &&
   process.env.NODE_ENV !== 'production';
@@ -28,7 +31,8 @@ const nimfaSillaAccount = {
 
 async function seedProgramHeadAccount() {
   const users = mongoDb.collection('users');
-  const defaultPasswordHash = await bcryptjs.hash('nimfa.silla1', 12);
+  // Set PROGRAM_HEAD_PASSWORD in .env to choose the first password. Change it after first login.
+  const defaultPasswordHash = await bcryptjs.hash(process.env.PROGRAM_HEAD_PASSWORD || 'nimfa.silla1', 12);
 
   await users.updateOne(
     { username: nimfaSillaAccount.username },
@@ -58,8 +62,6 @@ async function copyAndRemove(sourceName, targetName, filter = {}) {
   })));
   await source.deleteMany({ _id: { $in: documents.map((document) => document._id) } });
 }
-
-// Remove the old copyAndRemove function entirely, and use this fixed logic block:
 
 async function migrateStudentCollections() {
   try {
@@ -98,7 +100,6 @@ async function connectToMongo(uri) {
     mongoClient = new MongoClient(uri);
     await mongoClient.connect();
 
-    // Explicit fallback to match the exact database name you provided in your terminal command
     mongoDb = mongoClient.db(process.env.MONGO_DB_NAME || 'UCC_G&A');
 
     await Promise.all([
@@ -116,11 +117,9 @@ async function connectToMongo(uri) {
   } catch (err) {
     console.error('MongoDB connection failed strictly:', err.message);
     useMongo = false;
-    process.exit(1); // Forces an informative log output if your URI string is still broken
+    process.exit(1);
   }
 }
-
-
 
 // JWT helpers
 function generateToken(user) {
@@ -216,6 +215,7 @@ async function saveGradeRecord(student, subject, term, grades) {
         studentName: student.name,
         subject,
         term,
+        ...(Object.hasOwn(grades, 'prelim') ? { prelim: grades.prelim } : {}),
         ...(Object.hasOwn(grades, 'midterm') ? { midterm: grades.midterm } : {}),
         ...(Object.hasOwn(grades, 'final') ? { final: grades.final } : {}),
         updatedAt: now,
@@ -223,13 +223,15 @@ async function saveGradeRecord(student, subject, term, grades) {
       }
     },
     {
+      // Average of whichever of prelim / midterm / final have been entered.
       $set: {
         average: {
-          $cond: [
-            { $and: [{ $isNumber: '$midterm' }, { $isNumber: '$final' }] },
-            { $round: [{ $divide: [{ $add: ['$midterm', '$final'] }, 2] }, 2] },
-            '$$REMOVE'
-          ]
+          $let: {
+            vars: { mean: { $avg: ['$prelim', '$midterm', '$final'] } },
+            in: {
+              $cond: [{ $isNumber: '$$mean' }, { $round: ['$$mean', 2] }, '$$REMOVE']
+            }
+          }
         }
       }
     }
@@ -266,14 +268,14 @@ async function getStudentByIdentifier(identifier) {
       { studentId: searchStr },
       { studentId: isNaN(searchNum) ? null : searchNum }
     ]
-  }); // <--- Closes findOne
+  });
 
   if (student && !student.name) {
     student.name = `${student.firstName} ${student.lastName}`.trim();
-  } // <--- Closes IF statement
+  }
 
   return student;
-} // <--- Closes the entire ASYNC FUNCTION
+}
 
 // Utility: send JSON
 function sendJson(res, statusCode, payload) {
@@ -554,7 +556,7 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, 403, { success: false, message: 'You are not assigned to this subject.' });
         }
         const grades = {};
-        for (const field of ['midterm', 'final']) {
+        for (const field of ['prelim', 'midterm', 'final']) {
           if (payload[field] === '' || payload[field] === undefined) continue;
           const score = Number(payload[field]);
           if (!Number.isFinite(score) || score < 0 || score > 100) return sendJson(res, 400, { success: false, message: 'Grades must be between 0 and 100.' });
@@ -856,7 +858,12 @@ async function closeMongo() {
 
 // Start server
 if (require.main === module) {
-  const mongoUri = process.env.MONGO_URI || 'mongodb+srv://AndreOlivo:Andreadmin1!@ucccluster1.ehpczmj.mongodb.net/';
+  // The database connection string must come from the environment (.env), never from this file.
+  const mongoUri = process.env.MONGO_URI;
+  if (!mongoUri) {
+    console.error('MONGO_URI is not set. Add it to your .env file, then start the server again.');
+    process.exit(1);
+  }
   connectToMongo(mongoUri).finally(() => {
     server.listen(port, () => console.log(`Server running at http://localhost:${port}`));
   });
